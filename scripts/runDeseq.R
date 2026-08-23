@@ -1,10 +1,16 @@
-library("ggplot2")
-library("ggrepel")
-library("tidyverse")
-library("DESeq2")
-args <- commandArgs(trailingOnly = TRUE)
+# Two-condition DESeq2 comparison. For 3+ conditions use runDeseq_multi.R instead.
 
-# Access file paths from arguments
+get_script_dir <- function() {
+  cmd_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", cmd_args, value = TRUE)
+  if (length(file_arg) == 1) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg))))
+  }
+  getwd()
+}
+source(file.path(get_script_dir(), "deseq2_utils.R"))
+
+args <- commandArgs(trailingOnly = TRUE)
 counts_file <- args[1]
 metadata_file <- args[2]
 vsd_file <- args[3]
@@ -12,173 +18,45 @@ nrc_file <- args[4]
 pca_file <- args[5]
 vol_file <- args[6]
 DE_file <- args[7]
-GroupSize= args[8]
+GroupSize <- args[8]
 Type <- args[9]
-
-
-PCA_tm <- function(dds, groups="condition", trans_func=varianceStabilizingTransformation){
-  color_var <- if( length(groups) > 0) { sym(groups[1]) } else { NULL }
-  print(color_var)
-  
-
-  PCA <- dds %>% trans_func %>% plotPCA(intgroup=groups, returnData=TRUE)
-  percentVar <- round(100 * attr(PCA, "percentVar"), 1)
-  
-  PCA$name <- gsub("","", PCA$name)
-  
-  p <- ggplot(PCA, aes(x=PC1, y=PC2, color={{color_var}})) +
-    geom_point(size=6, alpha=0.5) +
-    geom_text_repel(aes(label=name), size=5, show_guide = F) + 
-    xlab(paste0("PC1: ",percentVar[1], "%")) +
-    ylab(paste0("PC2: ",percentVar[2], "%")) +
-    scale_color_manual(values=c("dodgerblue", "darkorange")) +
-    theme_bw() +
-    theme(axis.text = element_text(size = 17)) +
-    theme(axis.title = element_text(size = 17))
-  
-  ggsave(filename = pca_file, plot = p, width = 12, height = 12, dpi = 300, units = "in")
-  return(p)
-  
-}
-
-##############
-
-VolcanoPlot <- function(res, padj_cutoff=0.05, label_length = 20, Name=Name) {
-
-  Filtered <- res[res$padj < padj_cutoff, ]
-  Up <- Filtered[Filtered$log2FoldChange > 0, ]
-  Down <- Filtered[Filtered$log2FoldChange < 0, ]
-  
-  write.table(Filtered, paste0(DE_file,"/","DEG_",Name,".txt"), sep="\t", quote=F)
-  
-  top_Up <- Up[order(-Up$log2FoldChange), ][1:label_length, ]
-  top_Up$Names <- sub("^([^:]+:[^:]+):.*", "\\1", row.names(top_Up))
-  
-  top_Down <- Down[order(Down$log2FoldChange), ][1:label_length, ]
-  top_Down$Names <- sub("^([^:]+:[^:]+):.*", "\\1", row.names(top_Down))
-  
-  top_genes <- rbind(top_Up, top_Down)
-  
-
-  legend_labels <- c("Non-Significant",
-    paste("\nSignificant\nUp:", nrow(Up), "\nDown:", nrow(Down)) 
-  )
-  
-
-  p <- ggplot(data=res, aes(x=log2FoldChange, y=-log10(padj))) +
-    geom_point(aes(color = padj < padj_cutoff), size=1.5) +
-    scale_color_manual(name="", 
-                       values=c('FALSE'='#7f7f7f', 'TRUE'='#f62728'),
-                       labels=legend_labels) +
-    xlim(-abs(min(res$log2FoldChange)), abs(min(res$log2FoldChange))) + 
-    geom_text_repel(data=top_genes, aes(label=Names),
-                    size=4, max.overlaps=40) +
-    
-    theme_bw() +
-    theme(plot.title = element_text(hjust = 0.5),
-          axis.text = element_text(size = 14),
-          axis.title = element_text(size = 14),
-          legend.text = element_text(size = 10),
-          legend.spacing.y = unit(1, 'cm')) +  
-    guides(color = guide_legend(byrow = TRUE))  
-  
-  ggsave(filename = vol_file, plot = p, width = 12, height = 12, dpi = 300, units = "in")
-
-  common_ids <- intersect(rownames(Filtered), rownames(NormalizedCounts))
-  Filtered_sub <- Filtered[common_ids, ]
-  Norm_sub <- NormalizedCounts[common_ids, ]
-  Merged <- cbind(Filtered_sub, Norm_sub)
-
-  if (!requireNamespace("pheatmap", quietly = TRUE)) {
-    install.packages("pheatmap", repos = "https://cloud.r-project.org/")
-  }
-  library(pheatmap)
-
-  heatmap_file = paste0(DE_file,"/","Heatmap_",Name,".pdf")
-  my_colors <- colorRampPalette(c("brown", "white", "blue"))(40)
-  pheatmap(Merged[,7:ncol(Merged)],filename = heatmap_file, scale = "row", color = my_colors,  fontsize_row = 8 , cluster_cols = F)
-
-}
-
-
-reorder_columns <- function(counts_file, metadata_file) {
-  library(dplyr)
-  
-  counts <- counts_file
-  
-  metadata <- metadata_file
-  
-  ordered_samples <- metadata$sample
-  
-  fixed_cols <- c("fid", "ftype")
-  
-  matching_samples <- intersect(ordered_samples, colnames(counts))
-  
-  counts_reordered <- counts %>%
-    select(all_of(c(fixed_cols, matching_samples)))
-  
-  print("Columns have been reordered based on metadata.")
-  return(counts_reordered)
-}
+RefCondition <- if (length(args) >= 10) args[10] else ""
 
 print(metadata_file)
-
-print (" Loading the files...")
-Undata <- read.delim(counts_file, check.names = FALSE)
-metadata <- read.delim(metadata_file)
+print("Loading the files...")
+loaded <- load_counts_and_metadata(counts_file, metadata_file, Type)
+data <- loaded$counts
+metadata <- loaded$metadata
 print("Files loaded!")
 
-if ("smallRNA" %in% Type) {
-  data <- reorder_columns (Undata, metadata )
-}else{
-  matching_samples <- intersect(metadata$sample, colnames(Undata))
-  data <- Undata[, c("Ids" = colnames(Undata)[1], matching_samples), drop = FALSE]
-}
-colnames(data)[1] <- "Ids"
-Count_Matrix <- data
-
-if ("ftype" %in% names(data)) {
-  data$ftype <- NULL
+n_conditions <- nlevels(factor(metadata$condition))
+if (n_conditions != 2) {
+  stop("runDeseq.R only supports exactly two conditions (found ", n_conditions,
+       "). Use runDeseq_multi.R for 3+ conditions.")
 }
 
-row.names(data) <- data$Ids
-data$Ids <- NULL
+dds <- build_dds(data, metadata, GroupSize, RefCondition)
 
+ref_level <- levels(colData(dds)$condition)[1]
+comp_level <- levels(colData(dds)$condition)[2]
+Name <- paste0("condition_", comp_level, "_vs_", ref_level)
 
-metadata$sample <- as.factor(metadata$sample)
-metadata$condition <- as.factor(metadata$condition)
-
-Design <- ~ 1 + condition
-
-dds <- DESeqDataSetFromMatrix(countData = data,
-                              colData = metadata,
-                              design= Design)
-
-smallestGroupSize <- as.integer(GroupSize)
-keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
-dds <- dds[keep,]
-
-dds <- DESeq(dds, fitType="local")
-
-dds <- estimateSizeFactors(dds)
-
-par <- estimateDispersions(dds, fitType="local")
-
-plotDispEsts(par)
-
-Name =  paste0(colnames(metadata)[2], "_",unique(metadata$condition)[1], "_vs_", unique(metadata$condition)[2])
-
-res <- results(dds,  name=resultsNames(dds)[2])
-
+res <- results(dds, contrast = c("condition", comp_level, ref_level))
 res <- res %>% data.frame() %>% drop_na()
 
-NormalizedCounts <- counts(dds,normalized=TRUE)
-write.table(NormalizedCounts, nrc_file, sep='\t', quote = F)
+NormalizedCounts <- counts(dds, normalized = TRUE)
+write.table(NormalizedCounts, nrc_file, sep = '\t', quote = FALSE)
 
-vsd <- varianceStabilizingTransformation(dds, blind=FALSE, fitType="local")
-write.table(assay(vsd), vsd_file, sep='\t', quote = F)
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE, fitType = "local")
+write.table(assay(vsd), vsd_file, sep = '\t', quote = FALSE)
 
-VolcanoPlot(res, 0.1, 10, Name)
-PCA_tm(dds)
+VolcanoPlot(res, NormalizedCounts, Name,
+            vol_file = vol_file,
+            deg_file = file.path(DE_file, paste0("DEG_", Name, ".txt")),
+            heatmap_file = file.path(DE_file, paste0("Heatmap_", Name, ".pdf")),
+            padj_cutoff = 0.1, label_length = 10)
+
+PCA_tm(dds, pca_file)
+
+dir.create("Robj", showWarnings = FALSE)
 save.image(file = "Robj/session.RData")
-
