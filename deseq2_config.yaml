@@ -4,3 +4,8 @@ MetaData: "/Path/metaInfo.tsv"
 smallestGroupSize: 5 # minimum no. of samples per group
 DeseqEnv: "envs/env_deseq2.yaml"
 Type: "" # specify if it is smallRNAs
+RefCondition: "" # optional: name of the reference/control condition (e.g. "Control").
+                 # Leave empty to fall back to alphabetically-first condition.
+                 # With 2 conditions in MetaData, results are RefCondition vs the other.
+                 # With 3+ conditions, every pairwise contrast is run automatically
+                 # (RefCondition only controls which level sorts first in output names).
